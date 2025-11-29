@@ -1,0 +1,10 @@
+# LinkedIn data files (private data)
+*.csv
+*.zip
+
+# Extracted LinkedIn data directories
+Jobs/
+Verifications/
+
+# OS files
+.DS_Store

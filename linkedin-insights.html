@@ -46,12 +46,144 @@
     <div id="root"></div>
 
     <script type="text/babel">
-        // App will go here in subsequent tasks
+        const { useState, useCallback } = React;
+
+        function FileUpload({ onDataLoaded }) {
+            const [isDragging, setIsDragging] = useState(false);
+            const [loading, setLoading] = useState(false);
+            const [error, setError] = useState(null);
+
+            const parseCSV = (text) => {
+                return new Promise((resolve) => {
+                    Papa.parse(text, {
+                        header: true,
+                        skipEmptyLines: true,
+                        complete: (results) => resolve(results.data)
+                    });
+                });
+            };
+
+            const processZip = async (file) => {
+                setLoading(true);
+                setError(null);
+
+                try {
+                    const zip = await JSZip.loadAsync(file);
+                    const data = {};
+
+                    const fileMapping = {
+                        'Connections.csv': 'connections',
+                        'messages.csv': 'messages',
+                        'Positions.csv': 'positions',
+                        'Company Follows.csv': 'companyFollows',
+                        'Skills.csv': 'skills',
+                        'Education.csv': 'education',
+                        'Jobs/Saved Jobs.csv': 'savedJobs',
+                        'Jobs/Job Applications.csv': 'jobApplications',
+                        'Invitations.csv': 'invitations',
+                    };
+
+                    for (const [fileName, key] of Object.entries(fileMapping)) {
+                        const zipFile = zip.file(fileName);
+                        if (zipFile) {
+                            const text = await zipFile.async('string');
+                            data[key] = await parseCSV(text);
+                        }
+                    }
+
+                    if (!data.connections || data.connections.length === 0) {
+                        throw new Error('No connections found. Please upload a valid LinkedIn export.');
+                    }
+
+                    onDataLoaded(data);
+                } catch (err) {
+                    setError(err.message);
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            const handleDrop = useCallback((e) => {
+                e.preventDefault();
+                setIsDragging(false);
+
+                const file = e.dataTransfer.files[0];
+                if (file && file.name.endsWith('.zip')) {
+                    processZip(file);
+                } else {
+                    setError('Please upload a ZIP file from LinkedIn export');
+                }
+            }, []);
+
+            const handleFileSelect = (e) => {
+                const file = e.target.files[0];
+                if (file) {
+                    processZip(file);
+                }
+            };
+
+            return (
+                <div className="max-w-2xl mx-auto">
+                    <div
+                        onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+                        onDragLeave={() => setIsDragging(false)}
+                        onDrop={handleDrop}
+                        className={`border-2 border-dashed rounded-2xl p-16 text-center transition-all cursor-pointer
+                            ${isDragging ? 'border-linkedin bg-linkedin/10' : 'border-gray-600 hover:border-gray-500'}
+                            ${loading ? 'opacity-50 pointer-events-none' : ''}`}
+                    >
+                        <input
+                            type="file"
+                            accept=".zip"
+                            onChange={handleFileSelect}
+                            className="hidden"
+                            id="file-input"
+                        />
+                        <label htmlFor="file-input" className="cursor-pointer">
+                            <div className="text-6xl mb-4">📊</div>
+                            <h2 className="text-2xl font-semibold mb-2">
+                                {loading ? 'Processing...' : 'Drop your LinkedIn export here'}
+                            </h2>
+                            <p className="text-gray-400 mb-4">
+                                or click to browse for your ZIP file
+                            </p>
+                            <p className="text-sm text-gray-500">
+                                Your data stays in your browser. Nothing is uploaded to any server.
+                            </p>
+                        </label>
+                    </div>
+
+                    {error && (
+                        <div className="mt-4 p-4 bg-red-900/50 border border-red-500 rounded-lg text-red-200">
+                            {error}
+                        </div>
+                    )}
+
+                    <div className="mt-8 text-center text-gray-500 text-sm">
+                        <p>Don't have your export? <a href="https://www.linkedin.com/mypreferences/d/download-my-data" target="_blank" className="text-linkedin hover:underline">Download it from LinkedIn</a></p>
+                    </div>
+                </div>
+            );
+        }
+
         function App() {
+            const [data, setData] = useState(null);
+
+            if (!data) {
+                return (
+                    <div className="min-h-screen p-8">
+                        <h1 className="text-4xl font-bold text-center mb-2">LinkedIn Insights</h1>
+                        <p className="text-center text-gray-400 mb-12">Discover actionable insights from your professional network</p>
+                        <FileUpload onDataLoaded={setData} />
+                    </div>
+                );
+            }
+
             return (
                 <div className="min-h-screen p-8">
                     <h1 className="text-4xl font-bold text-center mb-8">LinkedIn Insights</h1>
-                    <p className="text-center text-gray-400">Upload component coming next...</p>
+                    <p className="text-center text-green-400">Data loaded! {data.connections?.length} connections found.</p>
+                    {/* Dashboard will go here */}
                 </div>
             );
         }
