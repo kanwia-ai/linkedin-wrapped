@@ -255,6 +255,215 @@
             }
         };
 
+        const { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line, PieChart, Pie, Cell } = Recharts;
+
+        const COLORS = ['#0A66C2', '#00A0DC', '#86D4F5', '#0073B1', '#004182', '#7FC15E', '#E68523', '#DD5143'];
+
+        function StatCard({ label, value, subtitle }) {
+            return (
+                <div className="bg-gray-800 rounded-xl p-6">
+                    <p className="text-gray-400 text-sm mb-1">{label}</p>
+                    <p className="text-3xl font-bold text-white">{value}</p>
+                    {subtitle && <p className="text-gray-500 text-sm mt-1">{subtitle}</p>}
+                </div>
+            );
+        }
+
+        function NetworkComposition({ data }) {
+            return (
+                <div className="bg-gray-800 rounded-xl p-6">
+                    <h3 className="text-xl font-semibold mb-4">Top Companies in Your Network</h3>
+                    <ResponsiveContainer width="100%" height={300}>
+                        <BarChart data={data.slice(0, 10)} layout="vertical">
+                            <XAxis type="number" stroke="#666" />
+                            <YAxis type="category" dataKey="name" stroke="#666" width={150} tick={{ fontSize: 12 }} />
+                            <Tooltip
+                                contentStyle={{ backgroundColor: '#1f2937', border: 'none', borderRadius: '8px' }}
+                                labelStyle={{ color: '#fff' }}
+                            />
+                            <Bar dataKey="count" fill="#0A66C2" radius={[0, 4, 4, 0]} />
+                        </BarChart>
+                    </ResponsiveContainer>
+                </div>
+            );
+        }
+
+        function ConnectionGrowth({ data }) {
+            return (
+                <div className="bg-gray-800 rounded-xl p-6">
+                    <h3 className="text-xl font-semibold mb-4">Connection Growth Over Time</h3>
+                    <ResponsiveContainer width="100%" height={250}>
+                        <LineChart data={data}>
+                            <XAxis dataKey="month" stroke="#666" tick={{ fontSize: 10 }} />
+                            <YAxis stroke="#666" />
+                            <Tooltip
+                                contentStyle={{ backgroundColor: '#1f2937', border: 'none', borderRadius: '8px' }}
+                                labelStyle={{ color: '#fff' }}
+                            />
+                            <Line type="monotone" dataKey="count" stroke="#0A66C2" strokeWidth={2} dot={false} />
+                        </LineChart>
+                    </ResponsiveContainer>
+                </div>
+            );
+        }
+
+        function DormantConnections({ connections }) {
+            const [showAll, setShowAll] = useState(false);
+            const displayed = showAll ? connections : connections.slice(0, 10);
+
+            return (
+                <div className="bg-gray-800 rounded-xl p-6">
+                    <div className="flex justify-between items-center mb-4">
+                        <div>
+                            <h3 className="text-xl font-semibold">Dormant Connections</h3>
+                            <p className="text-gray-400 text-sm">People you haven't messaged in 12+ months</p>
+                        </div>
+                        <span className="bg-yellow-600/30 text-yellow-400 px-3 py-1 rounded-full text-sm font-medium">
+                            {connections.length} connections
+                        </span>
+                    </div>
+
+                    <div className="space-y-3 max-h-96 overflow-y-auto">
+                        {displayed.map((conn, i) => (
+                            <a
+                                key={i}
+                                href={conn.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="flex justify-between items-center p-3 bg-gray-700/50 rounded-lg hover:bg-gray-700 transition"
+                            >
+                                <div>
+                                    <p className="font-medium">{conn.name}</p>
+                                    <p className="text-sm text-gray-400">{conn.position} at {conn.company}</p>
+                                </div>
+                                <div className="text-right text-sm">
+                                    <p className="text-gray-400">
+                                        {conn.lastMessage
+                                            ? `Last msg: ${conn.lastMessage.toLocaleDateString()}`
+                                            : 'Never messaged'}
+                                    </p>
+                                    <p className="text-gray-500">
+                                        Connected: {conn.connectedOn?.toLocaleDateString() || 'Unknown'}
+                                    </p>
+                                </div>
+                            </a>
+                        ))}
+                    </div>
+
+                    {connections.length > 10 && (
+                        <button
+                            onClick={() => setShowAll(!showAll)}
+                            className="mt-4 w-full py-2 text-linkedin hover:underline"
+                        >
+                            {showAll ? 'Show less' : `Show all ${connections.length} dormant connections`}
+                        </button>
+                    )}
+                </div>
+            );
+        }
+
+        function StrategicConnections({ connections }) {
+            const [showAll, setShowAll] = useState(false);
+            const warmConnections = connections.filter(c => c.isWarm);
+            const coldConnections = connections.filter(c => !c.isWarm);
+            const displayed = showAll ? connections : connections.slice(0, 10);
+
+            return (
+                <div className="bg-gray-800 rounded-xl p-6">
+                    <div className="flex justify-between items-center mb-4">
+                        <div>
+                            <h3 className="text-xl font-semibold">Strategic Connections</h3>
+                            <p className="text-gray-400 text-sm">People at companies you follow or saved jobs for</p>
+                        </div>
+                        <div className="flex gap-2">
+                            <span className="bg-green-600/30 text-green-400 px-3 py-1 rounded-full text-sm font-medium">
+                                {warmConnections.length} warm
+                            </span>
+                            <span className="bg-blue-600/30 text-blue-400 px-3 py-1 rounded-full text-sm font-medium">
+                                {coldConnections.length} cold
+                            </span>
+                        </div>
+                    </div>
+
+                    <div className="space-y-3 max-h-96 overflow-y-auto">
+                        {displayed.map((conn, i) => (
+                            <a
+                                key={i}
+                                href={conn.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="flex justify-between items-center p-3 bg-gray-700/50 rounded-lg hover:bg-gray-700 transition"
+                            >
+                                <div className="flex items-center gap-3">
+                                    <span className={`w-2 h-2 rounded-full ${conn.isWarm ? 'bg-green-400' : 'bg-blue-400'}`} />
+                                    <div>
+                                        <p className="font-medium">{conn.name}</p>
+                                        <p className="text-sm text-gray-400">{conn.position} at {conn.company}</p>
+                                    </div>
+                                </div>
+                                <div className="text-right text-sm text-gray-400">
+                                    {conn.messageCount > 0
+                                        ? `${conn.messageCount} messages`
+                                        : 'No messages yet'}
+                                </div>
+                            </a>
+                        ))}
+                    </div>
+
+                    {connections.length > 10 && (
+                        <button
+                            onClick={() => setShowAll(!showAll)}
+                            className="mt-4 w-full py-2 text-linkedin hover:underline"
+                        >
+                            {showAll ? 'Show less' : `Show all ${connections.length} strategic connections`}
+                        </button>
+                    )}
+                </div>
+            );
+        }
+
+        function NetworkHealth({ data, insights }) {
+            return (
+                <div className="space-y-6">
+                    <h2 className="text-2xl font-bold flex items-center gap-2">
+                        <span>🔗</span> Network Health
+                    </h2>
+
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                        <StatCard
+                            label="Total Connections"
+                            value={data.connections?.length?.toLocaleString() || 0}
+                        />
+                        <StatCard
+                            label="Companies in Network"
+                            value={insights.composition.topCompanies.length}
+                            subtitle="unique companies"
+                        />
+                        <StatCard
+                            label="Dormant Connections"
+                            value={insights.dormant.length}
+                            subtitle="12+ months silent"
+                        />
+                        <StatCard
+                            label="Strategic Connections"
+                            value={insights.strategic.length}
+                            subtitle="at target companies"
+                        />
+                    </div>
+
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        <NetworkComposition data={insights.composition.topCompanies} />
+                        <ConnectionGrowth data={insights.growth} />
+                    </div>
+
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        <DormantConnections connections={insights.dormant} />
+                        <StrategicConnections connections={insights.strategic} />
+                    </div>
+                </div>
+            );
+        }
+
         function FileUpload({ onDataLoaded }) {
             const [isDragging, setIsDragging] = useState(false);
             const [loading, setLoading] = useState(false);
