@@ -671,6 +671,74 @@
             );
         }
 
+        function Dashboard({ data }) {
+            const [activeTab, setActiveTab] = useState('network');
+
+            // Compute all insights
+            const userProfileUrl = 'https://www.linkedin.com/in/kyraatekwana'; // Will be dynamic in real use
+            const messagePartners = DataUtils.getMessagePartners(data.messages || [], userProfileUrl);
+
+            const insights = {
+                composition: DataUtils.getNetworkComposition(data.connections || []),
+                growth: DataUtils.getConnectionGrowth(data.connections || []),
+                dormant: DataUtils.getDormantConnections(data.connections || [], messagePartners, 12),
+                strategic: DataUtils.getStrategicConnections(
+                    data.connections || [],
+                    data.companyFollows || [],
+                    data.savedJobs || [],
+                    messagePartners
+                ),
+                trajectory: DataUtils.getCareerTrajectory(data.positions || [])
+            };
+
+            return (
+                <div className="max-w-7xl mx-auto">
+                    {/* Tab Navigation */}
+                    <div className="flex justify-center gap-4 mb-8">
+                        <button
+                            onClick={() => setActiveTab('network')}
+                            className={`px-6 py-3 rounded-full font-medium transition ${
+                                activeTab === 'network'
+                                    ? 'bg-linkedin text-white'
+                                    : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+                            }`}
+                        >
+                            Network Health
+                        </button>
+                        <button
+                            onClick={() => setActiveTab('career')}
+                            className={`px-6 py-3 rounded-full font-medium transition ${
+                                activeTab === 'career'
+                                    ? 'bg-linkedin text-white'
+                                    : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+                            }`}
+                        >
+                            Career Trajectory
+                        </button>
+                    </div>
+
+                    {/* Content */}
+                    {activeTab === 'network' && <NetworkHealth data={data} insights={insights} />}
+                    {activeTab === 'career' && <CareerTrajectory data={data} insights={insights} />}
+
+                    {/* Reset Button */}
+                    <div className="mt-12 text-center">
+                        <button
+                            onClick={() => window.location.reload()}
+                            className="text-gray-500 hover:text-gray-300 text-sm"
+                        >
+                            Upload different data
+                        </button>
+                    </div>
+
+                    {/* Footer */}
+                    <footer className="mt-12 text-center text-gray-600 text-sm">
+                        <p>Your data never leaves your browser. Built with privacy in mind.</p>
+                    </footer>
+                </div>
+            );
+        }
+
         function FileUpload({ onDataLoaded }) {
             const [isDragging, setIsDragging] = useState(false);
             const [loading, setLoading] = useState(false);
@@ -810,9 +878,11 @@
 
             return (
                 <div className="min-h-screen p-8">
-                    <h1 className="text-4xl font-bold text-center mb-8">LinkedIn Insights</h1>
-                    <p className="text-center text-green-400">Data loaded! {data.connections?.length} connections found.</p>
-                    {/* Dashboard will go here */}
+                    <h1 className="text-4xl font-bold text-center mb-2">LinkedIn Insights</h1>
+                    <p className="text-center text-gray-400 mb-8">
+                        Analyzing {data.connections?.length?.toLocaleString() || 0} connections
+                    </p>
+                    <Dashboard data={data} />
                 </div>
             );
         }
