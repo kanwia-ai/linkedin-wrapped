@@ -9,6 +9,7 @@ Verifications/
 # Test files
 test-upload.html
 test-parse.js
+final-verification.js
 
 # Node modules and package files
 node_modules/
