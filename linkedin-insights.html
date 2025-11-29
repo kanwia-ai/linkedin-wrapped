@@ -299,12 +299,473 @@
                         };
                     })
                     .sort((a, b) => b.startDate - a.startDate);
+            },
+
+            // Score seniority from title (0-100)
+            getSeniorityScore(title) {
+                if (!title) return 0;
+                const t = title.toLowerCase();
+
+                // C-suite and founders
+                if (t.includes('ceo') || t.includes('cto') || t.includes('cfo') ||
+                    t.includes('chief') || t.includes('founder') || t.includes('co-founder') ||
+                    t.includes('president')) return 100;
+
+                // VP level
+                if (t.includes('vp') || t.includes('vice president')) return 90;
+
+                // Director/Head level
+                if (t.includes('director') || t.includes('head of') || t.includes('head,')) return 80;
+
+                // Senior Manager/Lead
+                if (t.includes('senior manager') || t.includes('principal') ||
+                    t.includes('lead') || t.includes('staff')) return 70;
+
+                // Manager level
+                if (t.includes('manager')) return 60;
+
+                // Senior IC
+                if (t.includes('senior') || t.includes('sr.') || t.includes('sr ')) return 50;
+
+                // Standard IC
+                return 30;
+            },
+
+            // Check if connection shares history with user (same school/company)
+            sharesHistory(connection, userPositions, userEducation) {
+                const connCompany = (connection.company || '').toLowerCase();
+                const userCompanies = (userPositions || []).map(p => (p['Company Name'] || '').toLowerCase());
+
+                // Check if they worked at same company
+                if (userCompanies.some(c => c && connCompany.includes(c))) return true;
+
+                return false;
+            },
+
+            // Filter connections by role type for intent-specific views
+            getConnectionsByRole(connections, roleType) {
+                return connections.filter(conn => {
+                    const position = (conn['Position'] || '').toLowerCase();
+                    const company = (conn['Company'] || '').toLowerCase();
+
+                    switch(roleType) {
+                        case 'recruiters':
+                            return position.includes('recruit') || position.includes('talent') ||
+                                   position.includes('hr ') || position.includes('human resources') ||
+                                   position.includes('people ops') || position.includes('people operations');
+                        case 'investors':
+                            return position.includes('investor') || position.includes('partner') ||
+                                   position.includes('venture') || position.includes('capital') ||
+                                   position.includes('angel') || company.includes('ventures') ||
+                                   company.includes('capital') || company.includes('partners');
+                        case 'founders':
+                            return position.includes('founder') || position.includes('ceo') ||
+                                   position.includes('co-founder') || position.includes('cofounder');
+                        case 'executives':
+                            return position.includes('chief') || position.includes('ceo') ||
+                                   position.includes('cto') || position.includes('cfo') ||
+                                   position.includes('coo') || position.includes('vp') ||
+                                   position.includes('vice president') || position.includes('president');
+                        default:
+                            return true;
+                    }
+                }).map(conn => ({
+                    name: `${conn['First Name']} ${conn['Last Name']}`,
+                    company: conn['Company'] || 'Unknown',
+                    position: conn['Position'] || 'Unknown',
+                    url: conn['URL']
+                }));
+            },
+
+            // Get Forgotten VIPs - high-signal dormant connections
+            getForgottenVIPs(dormantConnections, data, intent, limit = 20) {
+                const targetCompanies = new Set();
+
+                // Build target company set from followed companies and saved jobs
+                (data.companyFollows || []).forEach(f => {
+                    if (f['Organization']) targetCompanies.add(f['Organization'].toLowerCase());
+                });
+                (data.savedJobs || []).forEach(j => {
+                    if (j['Company Name']) targetCompanies.add(j['Company Name'].toLowerCase());
+                });
+
+                // Score each dormant connection
+                const scored = dormantConnections.map(conn => {
+                    let score = 0;
+                    const reasons = [];
+
+                    // Seniority score (0-100, weighted)
+                    const seniorityScore = this.getSeniorityScore(conn.position);
+                    score += seniorityScore * 0.3;
+                    if (seniorityScore >= 80) reasons.push('Senior role');
+
+                    // At target company (big boost)
+                    const isAtTarget = targetCompanies.has((conn.company || '').toLowerCase());
+                    if (isAtTarget) {
+                        score += 40;
+                        reasons.push('At target company');
+                    }
+
+                    // Shared history (would need user positions passed in)
+                    if (this.sharesHistory(conn, data.positions, data.education)) {
+                        score += 20;
+                        reasons.push('Shared history');
+                    }
+
+                    // Recency of connection (more recent = warmer)
+                    if (conn.connectedOn) {
+                        const monthsAgo = Math.floor((new Date() - conn.connectedOn) / (1000 * 60 * 60 * 24 * 30));
+                        if (monthsAgo < 24) {
+                            score += 15;
+                            reasons.push('Connected recently');
+                        } else if (monthsAgo < 48) {
+                            score += 10;
+                        }
+                    }
+
+                    // Intent-specific boosts
+                    const position = (conn.position || '').toLowerCase();
+                    const company = (conn.company || '').toLowerCase();
+
+                    if (intent === 'jobSearch') {
+                        // Boost recruiters and hiring managers
+                        if (position.includes('recruit') || position.includes('talent') ||
+                            position.includes('hr') || position.includes('people')) {
+                            score += 25;
+                            reasons.push('Talent/HR role');
+                        }
+                        if (isAtTarget) score += 20; // Extra boost for target companies
+                    }
+
+                    if (intent === 'fundraising') {
+                        // Boost investors and partners
+                        if (position.includes('investor') || position.includes('partner') ||
+                            position.includes('venture') || position.includes('capital') ||
+                            company.includes('venture') || company.includes('capital')) {
+                            score += 35;
+                            reasons.push('Investor/VC');
+                        }
+                    }
+
+                    if (intent === 'building') {
+                        // Boost founders and operators
+                        if (position.includes('founder') || position.includes('ceo') ||
+                            position.includes('operator')) {
+                            score += 25;
+                            reasons.push('Founder/Operator');
+                        }
+                    }
+
+                    return {
+                        ...conn,
+                        vipScore: Math.round(score),
+                        vipReasons: reasons
+                    };
+                });
+
+                // Sort by score and return top N
+                return scored
+                    .filter(c => c.vipScore > 20) // Only include if has some signal
+                    .sort((a, b) => b.vipScore - a.vipScore)
+                    .slice(0, limit);
+            },
+
+            // Generate career insights (template-based)
+            getCareerInsights(trajectory, jobApplications, savedJobs) {
+                const insights = [];
+
+                if (!trajectory || trajectory.length === 0) return insights;
+
+                // 1. Tenure Analysis
+                const tenures = trajectory.map(p => p.tenureMonths).filter(t => t > 0);
+                const avgTenure = tenures.length > 0 ? tenures.reduce((a, b) => a + b, 0) / tenures.length : 0;
+                const shortStints = trajectory.filter(p => p.tenureMonths < 12 && !p.isCurrent).length;
+
+                if (avgTenure > 0 && avgTenure < 18) {
+                    insights.push({
+                        id: 'short-tenure',
+                        icon: '⏱️',
+                        headline: `Your average role tenure is ${Math.floor(avgTenure / 12)}y ${Math.round(avgTenure % 12)}m`,
+                        observation: `You've had ${shortStints} role${shortStints !== 1 ? 's' : ''} under a year. Not judging! Maybe you were exploring, startups imploded, or you got poached. But interviewers will definitely ask.`,
+                        prompt: `Have you thought about your narrative for quick moves? The best answer shows intentionality, not restlessness.`,
+                        action: 'Prep your story'
+                    });
+                } else if (avgTenure > 48) {
+                    insights.push({
+                        id: 'long-tenure',
+                        icon: '🏠',
+                        headline: `You've averaged ${Math.floor(avgTenure / 12)}+ years per role`,
+                        observation: `That's solid tenure - shows commitment and depth. But if you're job searching now, be ready for "why leave after so long?" questions.`,
+                        prompt: `What's pulling you toward something new? Growth ceiling? New challenge? That's your answer.`,
+                        action: 'Frame your "why now"'
+                    });
+                }
+
+                // 2. Job Search Behavior
+                const applied = (jobApplications || []).length;
+                const saved = (savedJobs || []).length;
+
+                if (applied > 0 && saved > 0) {
+                    const ratio = Math.round((applied / saved) * 100);
+
+                    if (ratio < 40) {
+                        insights.push({
+                            id: 'low-apply-rate',
+                            icon: '🎯',
+                            headline: `You've saved ${saved} jobs but only applied to ${applied}`,
+                            observation: `That's a ${ratio}% save-to-apply rate. Either you're super selective (good!), or there's friction stopping you from pulling the trigger.`,
+                            prompt: `What's holding you back on the saved ones? Requirements you don't meet? Cover letter fatigue? Imposter syndrome?`,
+                            action: 'Review saved jobs'
+                        });
+                    }
+                }
+
+                if (applied > 50) {
+                    insights.push({
+                        id: 'high-volume-apply',
+                        icon: '📨',
+                        headline: `You've applied to ${applied} jobs`,
+                        observation: `That's a lot of applications! Are you getting responses? High volume can work, but targeted apps with warm intros usually convert better.`,
+                        prompt: `Have you looked at which connections could refer you to your target companies?`,
+                        action: 'Find warm intros'
+                    });
+                }
+
+                // 3. Career Progression
+                const getLevel = (title) => {
+                    const t = (title || '').toLowerCase();
+                    if (t.includes('founder') || t.includes('ceo') || t.includes('chief') || t.includes('president')) return 5;
+                    if (t.includes('vp') || t.includes('vice president') || t.includes('director')) return 4;
+                    if (t.includes('senior manager') || t.includes('head of')) return 3;
+                    if (t.includes('manager') || t.includes('lead')) return 2;
+                    if (t.includes('senior') || t.includes('sr')) return 1;
+                    return 0;
+                };
+
+                const levelHistory = trajectory.map(p => ({ level: getLevel(p.title), title: p.title }));
+                const currentLevel = levelHistory[0]?.level || 0;
+                const peakLevel = Math.max(...levelHistory.map(l => l.level));
+
+                if (currentLevel < peakLevel && peakLevel > 0) {
+                    insights.push({
+                        id: 'level-dip',
+                        icon: '📉',
+                        headline: `You've held more senior titles before`,
+                        observation: `Looks like you stepped back from a higher level role at some point. Totally valid - maybe you switched industries, joined a startup, or prioritized learning over title.`,
+                        prompt: `Just be ready to explain it if asked. "I traded title for growth/equity/impact" usually lands well.`,
+                        action: 'Prep your narrative'
+                    });
+                }
+
+                // Check for plateau
+                const recentRoles = trajectory.slice(0, 3);
+                if (recentRoles.length >= 3) {
+                    const sameLevelCount = recentRoles.filter(p => getLevel(p.title) === currentLevel).length;
+                    const years = trajectory[2]?.startDate ?
+                        Math.round((new Date() - trajectory[2].startDate) / (1000 * 60 * 60 * 24 * 365)) : 0;
+
+                    if (sameLevelCount >= 3 && years >= 4) {
+                        insights.push({
+                            id: 'plateau',
+                            icon: '📊',
+                            headline: `You've been at a similar level for ${years}+ years`,
+                            observation: `Your last 3 roles have been around the same seniority. That's not bad if you're deepening expertise! But if you're itching for growth...`,
+                            prompt: `Is the next level what you actually want? Sometimes lateral moves to bigger scope are smarter than chasing titles.`,
+                            action: 'Define your growth goal'
+                        });
+                    }
+                }
+
+                // 4. Company Patterns
+                const companies = trajectory.map(p => p.company);
+                const uniqueCompanies = new Set(companies).size;
+
+                if (uniqueCompanies <= 2 && trajectory.length >= 4) {
+                    insights.push({
+                        id: 'company-loyal',
+                        icon: '🏢',
+                        headline: `You've mostly grown within ${uniqueCompanies} company${uniqueCompanies > 1 ? 'ies' : ''}`,
+                        observation: `Multiple roles at the same company shows you were trusted and promoted. But it can also mean your external network is smaller than peers who've moved around.`,
+                        prompt: `When you do look externally, lean on your internal advocates - they know your work and can vouch for you.`,
+                        action: 'Leverage your advocates'
+                    });
+                }
+
+                return insights;
+            },
+
+            // Generate relationship insights (template-based)
+            getRelationshipInsights(messagePartners, dormant, strategic, founders, recruiters, investors, executives) {
+                const insights = [];
+                const now = new Date();
+
+                // 1. Message Recency - Top messaged people era
+                const partners = Object.values(messagePartners || {});
+                const topPartners = partners.sort((a, b) => (b.messageCount || 0) - (a.messageCount || 0)).slice(0, 10);
+
+                if (topPartners.length >= 5) {
+                    const yearsWithMessages = topPartners.filter(p => p.lastMessage).map(p => p.lastMessage.getFullYear());
+                    if (yearsWithMessages.length > 0) {
+                        const avgYear = Math.round(yearsWithMessages.reduce((a, b) => a + b, 0) / yearsWithMessages.length);
+                        const yearsAgo = now.getFullYear() - avgYear;
+
+                        if (yearsAgo >= 2) {
+                            insights.push({
+                                id: 'stale-active-network',
+                                icon: '📅',
+                                headline: `Your most-messaged connections are from ${avgYear}-ish`,
+                                observation: `Your top 10 conversation partners are mostly from ${yearsAgo}+ years ago. Your "active" network might be getting a bit dated?`,
+                                prompt: `Who have you met recently that could become a go-to connection? Sometimes we forget to nurture newer relationships.`,
+                                action: 'Message someone new'
+                            });
+                        }
+                    }
+                }
+
+                // 2. Warm Intros Available
+                if (strategic && strategic.length > 0) {
+                    const warmCount = strategic.filter(c => c.isWarm).length;
+                    const coldCount = strategic.length - warmCount;
+
+                    insights.push({
+                        id: 'warm-intros',
+                        icon: '🤝',
+                        headline: `You have ${strategic.length} connections at target companies`,
+                        observation: `${warmCount} of them are "warm" (you've messaged before), ${coldCount} are cold. These are your fastest path to referrals.`,
+                        prompt: `Have you reached out to the warm ones recently? A "hey, I'm exploring opportunities" message is totally fair game.`,
+                        action: 'Reach out for referrals'
+                    });
+                }
+
+                // 3. Network Composition
+                if (founders && founders.length > 30) {
+                    insights.push({
+                        id: 'founder-heavy',
+                        icon: '🚀',
+                        headline: `You know ${founders.length} founders and CEOs`,
+                        observation: `That's a solid founder network! These connections are gold for startup opportunities, advice, or just learning what's being built.`,
+                        prompt: `Are you tapping into this? Founders love helping other founders (and aspiring ones).`,
+                        action: 'Engage your founder network'
+                    });
+                }
+
+                if (investors && investors.length > 15) {
+                    insights.push({
+                        id: 'investor-access',
+                        icon: '💰',
+                        headline: `You have ${investors.length} investors/VCs in your network`,
+                        observation: `That's real access to capital if you ever need it. Even if you're not fundraising, these folks see tons of companies and trends.`,
+                        prompt: `When's the last time you grabbed coffee with one? They often know about stealth roles and portfolio company needs.`,
+                        action: 'Reconnect with investors'
+                    });
+                }
+
+                if (recruiters && recruiters.length > 10) {
+                    insights.push({
+                        id: 'recruiter-network',
+                        icon: '🎯',
+                        headline: `You're connected to ${recruiters.length} recruiters`,
+                        observation: `Nice! Recruiters are most useful when you stay top of mind - not just when you're actively looking.`,
+                        prompt: `Do they know what you're looking for? A quick "here's what I'd move for" message keeps you on their radar.`,
+                        action: 'Update your recruiters'
+                    });
+                }
+
+                // 4. Dormant VIPs
+                if (dormant && dormant.length > 0) {
+                    const seniorDormant = dormant.filter(c => {
+                        const t = (c.position || '').toLowerCase();
+                        return t.includes('ceo') || t.includes('founder') || t.includes('chief') ||
+                               t.includes('vp') || t.includes('director') || t.includes('partner');
+                    });
+
+                    if (seniorDormant.length > 15) {
+                        insights.push({
+                            id: 'dormant-vips',
+                            icon: '💎',
+                            headline: `${seniorDormant.length} senior people you haven't talked to in a year+`,
+                            observation: `Directors, VPs, founders... people who could open doors. Connections fade if you don't maintain them.`,
+                            prompt: `Pick 3-5 and send a genuine "thinking of you" or "saw your company in the news" message. No ask, just warmth.`,
+                            action: 'Warm up cold VIPs'
+                        });
+                    }
+                }
+
+                // 5. Conversation Depth
+                if (partners.length > 20) {
+                    const oneWayConversations = partners.filter(p => p.messageCount === 1).length;
+                    const deepConversations = partners.filter(p => p.messageCount >= 10).length;
+
+                    if (oneWayConversations > deepConversations * 3 && oneWayConversations > 30) {
+                        insights.push({
+                            id: 'shallow-convos',
+                            icon: '💬',
+                            headline: `Lots of one-message conversations`,
+                            observation: `You have ${oneWayConversations} connections where you've only exchanged 1 message, vs. ${deepConversations} deeper conversations (10+ messages).`,
+                            prompt: `Quality > quantity in networking. A few deep relationships beat hundreds of "nice to meet you" messages.`,
+                            action: 'Deepen key relationships'
+                        });
+                    }
+                }
+
+                return insights;
             }
         };
 
-        const { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line, PieChart, Pie, Cell, AreaChart, Area } = Recharts;
+        const { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line, PieChart, Pie, Cell, AreaChart, Area, RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis, FunnelChart, Funnel, LabelList } = Recharts;
 
         const COLORS = ['#0A66C2', '#00A0DC', '#86D4F5', '#0073B1', '#004182', '#7FC15E', '#E68523', '#DD5143'];
+
+        const INTENT_MODES = {
+            general: {
+                id: 'general',
+                label: 'General Networking',
+                icon: '🤝',
+                description: 'Maintain and grow professional relationships'
+            },
+            jobSearch: {
+                id: 'jobSearch',
+                label: 'Active Job Search',
+                icon: '💼',
+                description: 'Find connections at target companies'
+            },
+            building: {
+                id: 'building',
+                label: 'Building in a Space',
+                icon: '🚀',
+                description: 'Connect with founders, operators, experts'
+            },
+            fundraising: {
+                id: 'fundraising',
+                label: 'Fundraising/Partnerships',
+                icon: '💰',
+                description: 'Find investors and potential partners'
+            }
+        };
+
+        function IntentModeSelector({ intent, onIntentChange }) {
+            return (
+                <div className="bg-gray-800 rounded-xl p-4 mb-6 border border-gray-700">
+                    <p className="text-sm text-gray-400 mb-3 font-medium">What are you optimizing for?</p>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                        {Object.values(INTENT_MODES).map(mode => (
+                            <button
+                                key={mode.id}
+                                onClick={() => onIntentChange(mode.id)}
+                                className={`p-3 rounded-lg text-left transition-all ${
+                                    intent === mode.id
+                                        ? 'bg-linkedin/20 border-2 border-linkedin'
+                                        : 'bg-gray-700/50 border-2 border-transparent hover:bg-gray-700'
+                                }`}
+                            >
+                                <div className="text-xl mb-1">{mode.icon}</div>
+                                <div className="text-sm font-medium">{mode.label}</div>
+                            </button>
+                        ))}
+                    </div>
+                </div>
+            );
+        }
 
         function StatCard({ label, value, subtitle }) {
             return (
@@ -492,44 +953,874 @@
             );
         }
 
-        function NetworkHealth({ data, insights }) {
+        function RoleConnections({ connections, title, icon, emptyMessage }) {
+            const [showAll, setShowAll] = useState(false);
+            const displayed = showAll ? connections : connections.slice(0, 8);
+
+            if (!connections || connections.length === 0) {
+                return (
+                    <div className="bg-gray-800 rounded-xl p-6 shadow-lg border border-gray-700">
+                        <h3 className="text-xl font-semibold flex items-center gap-2">
+                            <span>{icon}</span> {title}
+                        </h3>
+                        <p className="text-gray-400 mt-2">{emptyMessage}</p>
+                    </div>
+                );
+            }
+
+            return (
+                <div className="bg-gray-800 rounded-xl p-6 shadow-lg border border-gray-700">
+                    <div className="flex justify-between items-center mb-4">
+                        <h3 className="text-xl font-semibold flex items-center gap-2">
+                            <span>{icon}</span> {title}
+                        </h3>
+                        <span className="bg-linkedin/30 text-linkedin px-3 py-1 rounded-full text-sm font-medium">
+                            {connections.length} in network
+                        </span>
+                    </div>
+                    <div className="space-y-2 max-h-80 overflow-y-auto pr-2">
+                        {displayed.map((conn, i) => (
+                            <a
+                                key={i}
+                                href={conn.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="flex justify-between items-center p-3 bg-gray-700/50 rounded-lg hover:bg-gray-700 transition"
+                            >
+                                <div className="overflow-hidden">
+                                    <p className="font-medium truncate">{conn.name}</p>
+                                    <p className="text-sm text-gray-400 truncate">{conn.position}</p>
+                                </div>
+                                <span className="text-linkedin text-sm truncate ml-2">{conn.company}</span>
+                            </a>
+                        ))}
+                    </div>
+                    {connections.length > 8 && (
+                        <button
+                            onClick={() => setShowAll(!showAll)}
+                            className="mt-4 w-full py-2 text-linkedin hover:underline text-sm font-medium"
+                        >
+                            {showAll ? 'Show less' : `Show all ${connections.length}`}
+                        </button>
+                    )}
+                </div>
+            );
+        }
+
+        function InsightCard({ insight }) {
+            return (
+                <div className="bg-gray-800 rounded-xl p-6 shadow-lg border border-gray-700 hover:border-gray-600 transition">
+                    <div className="flex items-start gap-4">
+                        <div className="text-3xl">{insight.icon}</div>
+                        <div className="flex-1">
+                            <h3 className="text-lg font-semibold text-white mb-2">{insight.headline}</h3>
+                            <p className="text-gray-300 mb-3">{insight.observation}</p>
+                            <p className="text-linkedin italic mb-4">{insight.prompt}</p>
+                            <span className="inline-block px-4 py-2 bg-linkedin/20 text-linkedin rounded-lg text-sm font-medium">
+                                {insight.action} →
+                            </span>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        function JobSearchFunnel({ applied, saved }) {
+            if (!applied && !saved) return null;
+
+            const data = [
+                { name: 'Saved Jobs', value: saved || 0, fill: '#0A66C2' },
+                { name: 'Applied', value: applied || 0, fill: '#00A0DC' }
+            ].filter(d => d.value > 0);
+
+            if (data.length === 0) return null;
+
+            const conversionRate = saved > 0 ? Math.round((applied / saved) * 100) : 0;
+
+            return (
+                <div className="bg-gray-800 rounded-xl p-6 shadow-lg border border-gray-700">
+                    <h3 className="text-xl font-semibold mb-4">Job Search Funnel</h3>
+                    <div className="h-48">
+                        <ResponsiveContainer width="100%" height="100%">
+                            <BarChart data={data} layout="vertical">
+                                <XAxis type="number" stroke="#6b7280" />
+                                <YAxis type="category" dataKey="name" stroke="#6b7280" width={80} />
+                                <Tooltip
+                                    contentStyle={{ backgroundColor: '#1f2937', border: 'none', borderRadius: '8px' }}
+                                />
+                                <Bar dataKey="value" radius={[0, 4, 4, 0]}>
+                                    {data.map((entry, index) => (
+                                        <Cell key={index} fill={entry.fill} />
+                                    ))}
+                                </Bar>
+                            </BarChart>
+                        </ResponsiveContainer>
+                    </div>
+                    <div className="mt-4 text-center">
+                        <span className="text-3xl font-bold text-linkedin">{conversionRate}%</span>
+                        <p className="text-gray-400 text-sm">save-to-apply rate</p>
+                    </div>
+                </div>
+            );
+        }
+
+        function RedFlagRadar({ trajectory, applied, saved }) {
+            // Calculate risk scores (0-100, higher = more risk)
+            const tenures = trajectory?.map(p => p.tenureMonths).filter(t => t > 0) || [];
+            const avgTenure = tenures.length > 0 ? tenures.reduce((a, b) => a + b, 0) / tenures.length : 24;
+            const shortStints = trajectory?.filter(p => p.tenureMonths < 12 && !p.isCurrent).length || 0;
+
+            // Tenure risk: high if avg < 18 months
+            const tenureRisk = Math.min(100, Math.max(0, (18 - avgTenure) * 5 + 20));
+
+            // Job hopping risk: based on short stints
+            const hopRisk = Math.min(100, shortStints * 25);
+
+            // Apply rate risk: if saving but not applying
+            const applyRisk = (saved > 0 && applied > 0) ? Math.min(100, Math.max(0, 100 - (applied / saved) * 100)) : 0;
+
+            // Level dip risk
+            const getLevel = (title) => {
+                const t = (title || '').toLowerCase();
+                if (t.includes('founder') || t.includes('ceo') || t.includes('chief')) return 5;
+                if (t.includes('vp') || t.includes('director')) return 4;
+                if (t.includes('manager') || t.includes('lead')) return 2;
+                return 1;
+            };
+            const levels = trajectory?.map(p => getLevel(p.title)) || [];
+            const currentLevel = levels[0] || 0;
+            const peakLevel = Math.max(...levels, 0);
+            const levelDipRisk = currentLevel < peakLevel ? 60 : 0;
+
+            // Plateau risk
+            const recentLevels = levels.slice(0, 3);
+            const isPlateaued = recentLevels.length >= 3 && recentLevels.every(l => l === recentLevels[0]);
+            const plateauRisk = isPlateaued ? 50 : 0;
+
+            const data = [
+                { subject: 'Short Tenure', risk: tenureRisk, fullMark: 100 },
+                { subject: 'Job Hopping', risk: hopRisk, fullMark: 100 },
+                { subject: 'Apply Hesitancy', risk: applyRisk, fullMark: 100 },
+                { subject: 'Level Dip', risk: levelDipRisk, fullMark: 100 },
+                { subject: 'Plateau', risk: plateauRisk, fullMark: 100 }
+            ];
+
+            const avgRisk = Math.round(data.reduce((s, d) => s + d.risk, 0) / data.length);
+
+            return (
+                <div className="bg-gray-800 rounded-xl p-6 shadow-lg border border-gray-700">
+                    <h3 className="text-xl font-semibold mb-2">Interview Red Flags</h3>
+                    <p className="text-gray-400 text-sm mb-4">Things interviewers might ask about. Lower is better.</p>
+                    <div className="h-64">
+                        <ResponsiveContainer width="100%" height="100%">
+                            <RadarChart data={data}>
+                                <PolarGrid stroke="#374151" />
+                                <PolarAngleAxis dataKey="subject" tick={{ fill: '#9ca3af', fontSize: 11 }} />
+                                <PolarRadiusAxis angle={30} domain={[0, 100]} tick={{ fill: '#6b7280' }} />
+                                <Radar
+                                    name="Risk"
+                                    dataKey="risk"
+                                    stroke="#ef4444"
+                                    fill="#ef4444"
+                                    fillOpacity={0.3}
+                                />
+                            </RadarChart>
+                        </ResponsiveContainer>
+                    </div>
+                    <div className="mt-2 text-center">
+                        <span className={`text-2xl font-bold ${avgRisk < 30 ? 'text-green-400' : avgRisk < 60 ? 'text-yellow-400' : 'text-red-400'}`}>
+                            {avgRisk < 30 ? 'Low Risk' : avgRisk < 60 ? 'Moderate' : 'Prep Needed'}
+                        </span>
+                    </div>
+                </div>
+            );
+        }
+
+        function NarrativeTimeline({ trajectory }) {
+            const [selectedRole, setSelectedRole] = useState(null);
+
+            if (!trajectory || trajectory.length === 0) return null;
+
+            const getTalkingPoints = (role, index, allRoles) => {
+                const points = [];
+                const tenure = role.tenureMonths;
+                const nextRole = allRoles[index - 1];
+                const prevRole = allRoles[index + 1];
+
+                if (tenure < 12 && !role.isCurrent) {
+                    points.push({
+                        type: 'warning',
+                        text: "Short stint - be ready to explain",
+                        suggestion: "Focus on what you accomplished and learned, not why you left. 'I joined to do X, achieved Y, and realized Z was my next growth area.'"
+                    });
+                }
+
+                if (nextRole && role.company === nextRole.company) {
+                    points.push({
+                        type: 'positive',
+                        text: "Internal promotion",
+                        suggestion: "Great signal! Emphasize that you were trusted with more responsibility."
+                    });
+                }
+
+                if (prevRole) {
+                    const getLevel = (t) => {
+                        const title = (t || '').toLowerCase();
+                        if (title.includes('director') || title.includes('vp')) return 3;
+                        if (title.includes('manager') || title.includes('lead')) return 2;
+                        if (title.includes('senior')) return 1;
+                        return 0;
+                    };
+                    if (getLevel(role.title) < getLevel(prevRole.title)) {
+                        points.push({
+                            type: 'warning',
+                            text: "Step back in seniority",
+                            suggestion: "Frame it: 'I traded title for [learning/equity/impact/new industry exposure].'"
+                        });
+                    }
+                }
+
+                if (tenure >= 36) {
+                    points.push({
+                        type: 'positive',
+                        text: "Strong tenure",
+                        suggestion: "Shows commitment. If leaving now, have a clear 'why now' ready."
+                    });
+                }
+
+                return points.length > 0 ? points : [{ type: 'neutral', text: "Standard transition", suggestion: "No red flags here. Focus on your achievements." }];
+            };
+
+            return (
+                <div className="bg-gray-800 rounded-xl p-6 shadow-lg border border-gray-700">
+                    <h3 className="text-xl font-semibold mb-2">Narrative Builder</h3>
+                    <p className="text-gray-400 text-sm mb-4">Click a role to get interview talking points</p>
+
+                    <div className="space-y-2 max-h-64 overflow-y-auto pr-2">
+                        {trajectory.map((role, i) => (
+                            <div key={i}>
+                                <button
+                                    onClick={() => setSelectedRole(selectedRole === i ? null : i)}
+                                    className={`w-full text-left p-3 rounded-lg transition flex justify-between items-center ${
+                                        selectedRole === i ? 'bg-linkedin/20 border border-linkedin' : 'bg-gray-700/50 hover:bg-gray-700'
+                                    } ${role.tenureMonths < 12 && !role.isCurrent ? 'border-l-4 border-l-yellow-500' : ''}`}
+                                >
+                                    <div>
+                                        <p className="font-medium">{role.title}</p>
+                                        <p className="text-sm text-gray-400">{role.company}</p>
+                                    </div>
+                                    <div className="text-right text-sm">
+                                        <p className="text-gray-300">{Math.floor(role.tenureMonths / 12)}y {role.tenureMonths % 12}m</p>
+                                        <p className="text-gray-500">{role.startDate?.getFullYear()}</p>
+                                    </div>
+                                </button>
+
+                                {selectedRole === i && (
+                                    <div className="mt-2 ml-4 p-4 bg-gray-700/30 rounded-lg border-l-2 border-linkedin">
+                                        {getTalkingPoints(role, i, trajectory).map((point, j) => (
+                                            <div key={j} className="mb-3 last:mb-0">
+                                                <p className={`font-medium text-sm ${
+                                                    point.type === 'warning' ? 'text-yellow-400' :
+                                                    point.type === 'positive' ? 'text-green-400' : 'text-gray-300'
+                                                }`}>
+                                                    {point.type === 'warning' ? '⚠️' : point.type === 'positive' ? '✓' : '•'} {point.text}
+                                                </p>
+                                                <p className="text-gray-400 text-sm mt-1 italic">{point.suggestion}</p>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            );
+        }
+
+        function CareerActions({ insights, data }) {
+            const careerInsights = insights?.careerInsights || [];
+            const trajectory = insights?.trajectory || [];
+            const applied = data?.jobApplications?.length || 0;
+            const saved = data?.savedJobs?.length || 0;
+
             return (
                 <div className="space-y-6">
                     <h2 className="text-2xl font-bold flex items-center gap-2">
-                        <span>🔗</span> Network Health
+                        <span>🎯</span> Career Actions
+                    </h2>
+                    <p className="text-gray-400">Observations from your career history - things an interviewer or mentor might notice.</p>
+
+                    {/* Visualizations */}
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                        <JobSearchFunnel applied={applied} saved={saved} />
+                        <RedFlagRadar trajectory={trajectory} applied={applied} saved={saved} />
+                        <NarrativeTimeline trajectory={trajectory} />
+                    </div>
+
+                    {/* Insight Cards */}
+                    {careerInsights.length > 0 && (
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                            {careerInsights.map(insight => (
+                                <InsightCard key={insight.id} insight={insight} />
+                            ))}
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        function ConversationDepthHistogram({ messagePartners }) {
+            const partners = Object.values(messagePartners || {});
+            if (partners.length === 0) return null;
+
+            // Bucket by message count
+            const buckets = [
+                { name: '1 msg', min: 1, max: 1, count: 0 },
+                { name: '2-5', min: 2, max: 5, count: 0 },
+                { name: '6-10', min: 6, max: 10, count: 0 },
+                { name: '11-25', min: 11, max: 25, count: 0 },
+                { name: '26-50', min: 26, max: 50, count: 0 },
+                { name: '50+', min: 51, max: Infinity, count: 0 }
+            ];
+
+            partners.forEach(p => {
+                const count = p.messageCount || 0;
+                const bucket = buckets.find(b => count >= b.min && count <= b.max);
+                if (bucket) bucket.count++;
+            });
+
+            const deepCount = partners.filter(p => (p.messageCount || 0) >= 10).length;
+            const shallowCount = partners.filter(p => (p.messageCount || 0) <= 2).length;
+
+            return (
+                <div className="bg-gray-800 rounded-xl p-6 shadow-lg border border-gray-700">
+                    <h3 className="text-xl font-semibold mb-2">Conversation Depth</h3>
+                    <p className="text-gray-400 text-sm mb-4">How deep are your LinkedIn relationships?</p>
+                    <div className="h-48">
+                        <ResponsiveContainer width="100%" height="100%">
+                            <BarChart data={buckets}>
+                                <XAxis dataKey="name" stroke="#6b7280" tick={{ fontSize: 11 }} />
+                                <YAxis stroke="#6b7280" />
+                                <Tooltip
+                                    contentStyle={{ backgroundColor: '#1f2937', border: 'none', borderRadius: '8px' }}
+                                    formatter={(value) => [value, 'Connections']}
+                                />
+                                <Bar dataKey="count" fill="#0A66C2" radius={[4, 4, 0, 0]} />
+                            </BarChart>
+                        </ResponsiveContainer>
+                    </div>
+                    <div className="mt-4 flex justify-between text-sm">
+                        <span className="text-gray-400">Shallow (1-2 msgs): <span className="text-white font-medium">{shallowCount}</span></span>
+                        <span className="text-gray-400">Deep (10+ msgs): <span className="text-green-400 font-medium">{deepCount}</span></span>
+                    </div>
+                </div>
+            );
+        }
+
+        function FadingFastChart({ messagePartners }) {
+            const partners = Object.values(messagePartners || {});
+            if (partners.length === 0) return null;
+
+            const now = new Date();
+            const oneYearAgo = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
+            const twoYearsAgo = new Date(now.getFullYear() - 2, now.getMonth(), now.getDate());
+
+            // Find people who WERE active (10+ messages) but haven't messaged in 1+ years
+            const fadingFast = partners
+                .filter(p => {
+                    const wasActive = (p.messageCount || 0) >= 5;
+                    const lastMsg = p.lastMessage;
+                    const isStale = lastMsg && lastMsg < oneYearAgo;
+                    return wasActive && isStale;
+                })
+                .sort((a, b) => (b.messageCount || 0) - (a.messageCount || 0))
+                .slice(0, 10);
+
+            if (fadingFast.length === 0) {
+                return (
+                    <div className="bg-gray-800 rounded-xl p-6 shadow-lg border border-gray-700">
+                        <h3 className="text-xl font-semibold mb-2">Fading Fast</h3>
+                        <p className="text-gray-400 text-sm">No once-active relationships have gone cold. Nice!</p>
+                    </div>
+                );
+            }
+
+            return (
+                <div className="bg-gray-800 rounded-xl p-6 shadow-lg border border-gray-700">
+                    <h3 className="text-xl font-semibold mb-2">Fading Fast</h3>
+                    <p className="text-gray-400 text-sm mb-4">Once-active relationships going cold</p>
+                    <div className="space-y-2 max-h-64 overflow-y-auto pr-2">
+                        {fadingFast.map((p, i) => {
+                            const monthsAgo = p.lastMessage ? Math.floor((now - p.lastMessage) / (1000 * 60 * 60 * 24 * 30)) : 0;
+                            return (
+                                <div key={i} className="flex justify-between items-center p-3 bg-gray-700/50 rounded-lg">
+                                    <div>
+                                        <p className="font-medium text-sm">{p.name}</p>
+                                        <p className="text-xs text-gray-500">{p.messageCount} messages total</p>
+                                    </div>
+                                    <div className="text-right">
+                                        <p className="text-yellow-400 text-sm">{monthsAgo}mo ago</p>
+                                        <p className="text-xs text-gray-500">last message</p>
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
+                    <p className="mt-4 text-sm text-gray-400 italic">These relationships were active - a quick check-in could revive them.</p>
+                </div>
+            );
+        }
+
+        function ReciprocityMeter({ messagePartners }) {
+            // Note: LinkedIn export doesn't distinguish sent vs received well
+            // This is a simplified version based on available data
+            const partners = Object.values(messagePartners || {});
+            if (partners.length === 0) return null;
+
+            // Estimate based on conversation patterns
+            const oneWay = partners.filter(p => (p.messageCount || 0) === 1).length;
+            const twoWay = partners.filter(p => (p.messageCount || 0) >= 2).length;
+            const deep = partners.filter(p => (p.messageCount || 0) >= 10).length;
+
+            const total = partners.length;
+            const reciprocityScore = total > 0 ? Math.round(((twoWay + deep * 2) / (total + deep)) * 100) : 0;
+
+            return (
+                <div className="bg-gray-800 rounded-xl p-6 shadow-lg border border-gray-700">
+                    <h3 className="text-xl font-semibold mb-2">Reciprocity Score</h3>
+                    <p className="text-gray-400 text-sm mb-4">How balanced are your conversations?</p>
+
+                    <div className="flex justify-center mb-4">
+                        <div className="relative w-32 h-32">
+                            <svg className="w-full h-full" viewBox="0 0 100 100">
+                                <circle cx="50" cy="50" r="45" fill="none" stroke="#374151" strokeWidth="10" />
+                                <circle
+                                    cx="50" cy="50" r="45"
+                                    fill="none"
+                                    stroke={reciprocityScore >= 60 ? '#22c55e' : reciprocityScore >= 40 ? '#eab308' : '#ef4444'}
+                                    strokeWidth="10"
+                                    strokeDasharray={`${reciprocityScore * 2.83} 283`}
+                                    strokeLinecap="round"
+                                    transform="rotate(-90 50 50)"
+                                />
+                            </svg>
+                            <div className="absolute inset-0 flex items-center justify-center">
+                                <span className="text-2xl font-bold">{reciprocityScore}%</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="space-y-2 text-sm">
+                        <div className="flex justify-between">
+                            <span className="text-gray-400">One-way conversations</span>
+                            <span className="text-gray-300">{oneWay}</span>
+                        </div>
+                        <div className="flex justify-between">
+                            <span className="text-gray-400">Back-and-forth (2+)</span>
+                            <span className="text-gray-300">{twoWay}</span>
+                        </div>
+                        <div className="flex justify-between">
+                            <span className="text-gray-400">Deep relationships (10+)</span>
+                            <span className="text-green-400">{deep}</span>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        function IntroPathBuilder({ strategic, companyFollows, savedJobs }) {
+            const [selectedCompany, setSelectedCompany] = useState(null);
+
+            // Get unique target companies from follows and saved jobs
+            const targetCompanies = new Map();
+            (companyFollows || []).forEach(f => {
+                const name = f['Organization'];
+                if (name && !targetCompanies.has(name)) {
+                    targetCompanies.set(name, { name, source: 'following' });
+                }
+            });
+            (savedJobs || []).forEach(j => {
+                const name = j['Company Name'];
+                if (name && !targetCompanies.has(name)) {
+                    targetCompanies.set(name, { name, source: 'saved job' });
+                }
+            });
+
+            // Find connections at each target company
+            const companiesWithConnections = Array.from(targetCompanies.values())
+                .map(company => {
+                    const connections = (strategic || []).filter(c =>
+                        (c.company || '').toLowerCase() === company.name.toLowerCase()
+                    );
+                    return { ...company, connections };
+                })
+                .filter(c => c.connections.length > 0)
+                .sort((a, b) => b.connections.length - a.connections.length)
+                .slice(0, 15);
+
+            if (companiesWithConnections.length === 0) {
+                return (
+                    <div className="bg-gray-800 rounded-xl p-6 shadow-lg border border-gray-700">
+                        <h3 className="text-xl font-semibold mb-2">Intro Path Builder</h3>
+                        <p className="text-gray-400 text-sm">No connections found at your target companies. Try following more companies or saving more jobs.</p>
+                    </div>
+                );
+            }
+
+            const selected = companiesWithConnections.find(c => c.name === selectedCompany);
+
+            return (
+                <div className="bg-gray-800 rounded-xl p-6 shadow-lg border border-gray-700">
+                    <h3 className="text-xl font-semibold mb-2">Intro Path Builder</h3>
+                    <p className="text-gray-400 text-sm mb-4">Click a target company to see your warm paths in</p>
+
+                    <div className="flex flex-wrap gap-2 mb-4 max-h-24 overflow-y-auto">
+                        {companiesWithConnections.map((company, i) => (
+                            <button
+                                key={i}
+                                onClick={() => setSelectedCompany(selectedCompany === company.name ? null : company.name)}
+                                className={`px-3 py-1 rounded-full text-sm transition ${
+                                    selectedCompany === company.name
+                                        ? 'bg-linkedin text-white'
+                                        : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                                }`}
+                            >
+                                {company.name} ({company.connections.length})
+                            </button>
+                        ))}
+                    </div>
+
+                    {selected && (
+                        <div className="bg-gray-700/50 rounded-lg p-4">
+                            <p className="text-sm text-gray-400 mb-3">
+                                Your connections at <span className="text-white font-medium">{selected.name}</span>:
+                            </p>
+                            <div className="space-y-2 max-h-40 overflow-y-auto">
+                                {selected.connections.map((conn, i) => (
+                                    <a
+                                        key={i}
+                                        href={conn.url}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="flex justify-between items-center p-2 hover:bg-gray-700 rounded transition"
+                                    >
+                                        <div>
+                                            <p className="font-medium text-sm">{conn.name}</p>
+                                            <p className="text-xs text-gray-400">{conn.position}</p>
+                                        </div>
+                                        <span className={`text-xs px-2 py-1 rounded ${conn.isWarm ? 'bg-green-500/20 text-green-400' : 'bg-gray-600 text-gray-400'}`}>
+                                            {conn.isWarm ? 'Warm' : 'Cold'}
+                                        </span>
+                                    </a>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    {!selected && (
+                        <p className="text-center text-gray-500 text-sm py-4">Select a company above to see your intro paths</p>
+                    )}
+                </div>
+            );
+        }
+
+        function RelationshipIntel({ insights, data, messagePartners }) {
+            const relationshipInsights = insights?.relationshipInsights || [];
+
+            return (
+                <div className="space-y-6">
+                    <h2 className="text-2xl font-bold flex items-center gap-2">
+                        <span>💬</span> Relationship Intel
+                    </h2>
+                    <p className="text-gray-400">Patterns in how you network - and opportunities you might be missing.</p>
+
+                    {/* Visualizations */}
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        <ConversationDepthHistogram messagePartners={messagePartners} />
+                        <ReciprocityMeter messagePartners={messagePartners} />
+                        <FadingFastChart messagePartners={messagePartners} />
+                        <IntroPathBuilder
+                            strategic={insights?.strategic}
+                            companyFollows={data?.companyFollows}
+                            savedJobs={data?.savedJobs}
+                        />
+                    </div>
+
+                    {/* Insight Cards */}
+                    {relationshipInsights.length > 0 && (
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                            {relationshipInsights.map(insight => (
+                                <InsightCard key={insight.id} insight={insight} />
+                            ))}
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        function ForgottenVIPs({ vips, intent }) {
+            if (!vips || vips.length === 0) {
+                return (
+                    <div className="bg-gray-800 rounded-xl p-6 shadow-lg border border-gray-700">
+                        <h3 className="text-xl font-semibold flex items-center gap-2">
+                            <span>⭐</span> Forgotten VIPs
+                        </h3>
+                        <p className="text-gray-400 mt-2">
+                            No high-priority dormant connections found for your current intent.
+                            Try switching intent modes or following more companies.
+                        </p>
+                    </div>
+                );
+            }
+
+            return (
+                <div className="bg-gray-800 rounded-xl p-6 shadow-lg border border-gray-700">
+                    <div className="flex justify-between items-center mb-4">
+                        <div>
+                            <h3 className="text-xl font-semibold flex items-center gap-2">
+                                <span>⭐</span> Forgotten VIPs
+                            </h3>
+                            <p className="text-gray-400 text-sm">
+                                High-value connections worth re-engaging
+                            </p>
+                        </div>
+                        <span className="bg-purple-600/30 text-purple-400 px-3 py-1 rounded-full text-sm font-medium">
+                            Top {vips.length}
+                        </span>
+                    </div>
+
+                    <div className="space-y-3 max-h-[500px] overflow-y-auto pr-2">
+                        {vips.map((vip, i) => (
+                            <div
+                                key={i}
+                                className="p-4 bg-gray-700/50 rounded-lg hover:bg-gray-700 transition border-l-4 border-purple-500"
+                            >
+                                <div className="flex justify-between items-start mb-2">
+                                    <div className="flex-1 min-w-0">
+                                        <a
+                                            href={vip.url}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="font-semibold text-lg hover:text-linkedin truncate block"
+                                        >
+                                            {vip.name}
+                                        </a>
+                                        <p className="text-gray-300">{vip.position}</p>
+                                        <p className="text-linkedin text-sm">{vip.company}</p>
+                                    </div>
+                                    <div className="text-right shrink-0 ml-4">
+                                        <div className="text-2xl font-bold text-purple-400">{vip.vipScore}</div>
+                                        <div className="text-xs text-gray-500">VIP Score</div>
+                                    </div>
+                                </div>
+
+                                {/* Reason tags */}
+                                {vip.vipReasons.length > 0 && (
+                                    <div className="flex flex-wrap gap-1 mt-2">
+                                        {vip.vipReasons.map((reason, j) => (
+                                            <span
+                                                key={j}
+                                                className="px-2 py-0.5 bg-gray-600/50 rounded text-xs text-gray-300"
+                                            >
+                                                {reason}
+                                            </span>
+                                        ))}
+                                    </div>
+                                )}
+
+                                {/* Context */}
+                                <div className="mt-3 pt-3 border-t border-gray-600 flex justify-between text-xs text-gray-500">
+                                    <span>
+                                        Connected: {vip.connectedOn?.toLocaleDateString('en-US', { month: 'short', year: 'numeric' }) || 'Unknown'}
+                                    </span>
+                                    <span>
+                                        {vip.lastMessage
+                                            ? `Last msg: ${vip.lastMessage.toLocaleDateString('en-US', { month: 'short', year: 'numeric' })}`
+                                            : 'Never messaged'
+                                        }
+                                    </span>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            );
+        }
+
+        function NetworkHealth({ data, insights, intent }) {
+            // Intent-specific stat cards
+            const getIntentStats = () => {
+                switch(intent) {
+                    case 'jobSearch':
+                        return (
+                            <>
+                                <StatCard label="At Target Companies" value={insights.strategic.length} subtitle="can refer you" />
+                                <StatCard label="Recruiters" value={insights.recruiters.length} subtitle="in network" />
+                                <StatCard label="Forgotten VIPs" value={insights.forgottenVIPs?.length || 0} subtitle="worth reaching out" />
+                                <StatCard label="Executives" value={insights.executives.length} subtitle="decision makers" />
+                            </>
+                        );
+                    case 'fundraising':
+                        return (
+                            <>
+                                <StatCard label="Investors & VCs" value={insights.investors.length} subtitle="in network" />
+                                <StatCard label="Executives" value={insights.executives.length} subtitle="potential intros" />
+                                <StatCard label="Forgotten VIPs" value={insights.forgottenVIPs?.length || 0} subtitle="warm leads" />
+                                <StatCard label="Founders" value={insights.founders.length} subtitle="peer network" />
+                            </>
+                        );
+                    case 'building':
+                        return (
+                            <>
+                                <StatCard label="Founders & CEOs" value={insights.founders.length} subtitle="in network" />
+                                <StatCard label="Executives" value={insights.executives.length} subtitle="operators" />
+                                <StatCard label="Forgotten VIPs" value={insights.forgottenVIPs?.length || 0} subtitle="reconnect" />
+                                <StatCard label="Total Network" value={data.connections?.length?.toLocaleString() || 0} />
+                            </>
+                        );
+                    default: // general
+                        return (
+                            <>
+                                <StatCard label="Total Connections" value={data.connections?.length?.toLocaleString() || 0} />
+                                <StatCard label="Companies" value={insights.composition.topCompanies.length} subtitle="in network" />
+                                <StatCard label="Forgotten VIPs" value={insights.forgottenVIPs?.length || 0} subtitle="high-priority" />
+                                <StatCard label="Strategic" value={insights.strategic.length} subtitle="at target cos" />
+                            </>
+                        );
+                }
+            };
+
+            // Intent-specific panels
+            const getIntentPanels = () => {
+                switch(intent) {
+                    case 'jobSearch':
+                        return (
+                            <>
+                                <ForgottenVIPs vips={insights.forgottenVIPs} intent={intent} />
+                                <StrategicConnections connections={insights.strategic} />
+                                <RoleConnections
+                                    connections={insights.recruiters}
+                                    title="Recruiters & Talent"
+                                    icon="🎯"
+                                    emptyMessage="No recruiters found in your network."
+                                />
+                                <RoleConnections
+                                    connections={insights.executives}
+                                    title="Hiring Managers"
+                                    icon="👔"
+                                    emptyMessage="No executives found."
+                                />
+                            </>
+                        );
+                    case 'fundraising':
+                        return (
+                            <>
+                                <RoleConnections
+                                    connections={insights.investors}
+                                    title="Investors & VCs"
+                                    icon="💰"
+                                    emptyMessage="No investors found in your network."
+                                />
+                                <ForgottenVIPs vips={insights.forgottenVIPs} intent={intent} />
+                                <RoleConnections
+                                    connections={insights.executives}
+                                    title="Executives (Intro Paths)"
+                                    icon="🤝"
+                                    emptyMessage="No executives found."
+                                />
+                                <RoleConnections
+                                    connections={insights.founders}
+                                    title="Fellow Founders"
+                                    icon="🚀"
+                                    emptyMessage="No founders found."
+                                />
+                            </>
+                        );
+                    case 'building':
+                        return (
+                            <>
+                                <RoleConnections
+                                    connections={insights.founders}
+                                    title="Founders & CEOs"
+                                    icon="🚀"
+                                    emptyMessage="No founders found in your network."
+                                />
+                                <ForgottenVIPs vips={insights.forgottenVIPs} intent={intent} />
+                                <RoleConnections
+                                    connections={insights.executives}
+                                    title="Operators & Executives"
+                                    icon="⚡"
+                                    emptyMessage="No executives found."
+                                />
+                                <NetworkComposition data={insights.composition.topCompanies} />
+                            </>
+                        );
+                    default: // general
+                        return (
+                            <>
+                                <ForgottenVIPs vips={insights.forgottenVIPs} intent={intent} />
+                                <StrategicConnections connections={insights.strategic} />
+                            </>
+                        );
+                }
+            };
+
+            return (
+                <div className="space-y-6">
+                    <h2 className="text-2xl font-bold flex items-center gap-2">
+                        <span>{INTENT_MODES[intent]?.icon || '🔗'}</span>
+                        {intent === 'general' ? 'Network Health' : INTENT_MODES[intent]?.label}
                     </h2>
 
                     <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                        <StatCard
-                            label="Total Connections"
-                            value={data.connections?.length?.toLocaleString() || 0}
-                        />
-                        <StatCard
-                            label="Companies in Network"
-                            value={insights.composition.topCompanies.length}
-                            subtitle="unique companies"
-                        />
-                        <StatCard
-                            label="Dormant"
-                            value={insights.dormant.length}
-                            subtitle="12+ months silent"
-                        />
-                        <StatCard
-                            label="Strategic"
-                            value={insights.strategic.length}
-                            subtitle="at target companies"
-                        />
+                        {getIntentStats()}
                     </div>
 
+                    {/* Charts only for general view */}
+                    {intent === 'general' && (
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                            <NetworkComposition data={insights.composition.topCompanies} />
+                            <ConnectionGrowth data={insights.growth} />
+                        </div>
+                    )}
+
+                    {/* Intent-specific panels */}
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                        <NetworkComposition data={insights.composition.topCompanies} />
-                        <ConnectionGrowth data={insights.growth} />
+                        {getIntentPanels()}
                     </div>
 
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                        <DormantConnections connections={insights.dormant} />
-                        <StrategicConnections connections={insights.strategic} />
-                    </div>
+                    {/* Collapsible full dormant list */}
+                    <details className="bg-gray-800 rounded-xl border border-gray-700">
+                        <summary className="p-4 cursor-pointer hover:bg-gray-700/50 transition flex justify-between items-center">
+                            <span className="text-gray-400">
+                                View all {insights.dormant.length.toLocaleString()} dormant connections
+                            </span>
+                            <span className="text-gray-500 text-sm">
+                                (12+ months no contact)
+                            </span>
+                        </summary>
+                        <div className="p-4 pt-0 max-h-96 overflow-y-auto">
+                            <div className="space-y-2">
+                                {insights.dormant.slice(0, 100).map((conn, i) => (
+                                    <a
+                                        key={i}
+                                        href={conn.url}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="flex justify-between items-center p-2 hover:bg-gray-700/50 rounded text-sm"
+                                    >
+                                        <span className="text-gray-300 truncate">{conn.name}</span>
+                                        <span className="text-gray-500 truncate ml-2">{conn.company}</span>
+                                    </a>
+                                ))}
+                                {insights.dormant.length > 100 && (
+                                    <p className="text-center text-gray-500 text-sm py-2">
+                                        + {insights.dormant.length - 100} more...
+                                    </p>
+                                )}
+                            </div>
+                        </div>
+                    </details>
                 </div>
             );
         }
@@ -740,11 +2031,8 @@
                     </div>
 
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                        <CareerTimeline positions={insights.trajectory} />
-                        <div className="space-y-6">
-                            <TenureAnalysis positions={insights.trajectory} />
-                            <CareerInsights positions={insights.trajectory} />
-                        </div>
+                        <TenureAnalysis positions={insights.trajectory} />
+                        <CareerInsights positions={insights.trajectory} />
                     </div>
                 </div>
             );
@@ -753,59 +2041,107 @@
         function Dashboard({ data, userProfileUrl }) {
             const [activeTab, setActiveTab] = useState('network');
             const [insights, setInsights] = useState(null);
+            const [intent, setIntent] = useState('general');
 
             useEffect(() => {
                 if(!data) return;
 
                 // Compute all insights
                 const messagePartners = DataUtils.getMessagePartners(data.messages || [], userProfileUrl);
+                const dormant = DataUtils.getDormantConnections(data.connections || [], messagePartners, 12);
+
+                // Intent-specific lists
+                const recruiters = DataUtils.getConnectionsByRole(data.connections || [], 'recruiters');
+                const investors = DataUtils.getConnectionsByRole(data.connections || [], 'investors');
+                const founders = DataUtils.getConnectionsByRole(data.connections || [], 'founders');
+                const executives = DataUtils.getConnectionsByRole(data.connections || [], 'executives');
+
+                const strategic = DataUtils.getStrategicConnections(
+                    data.connections || [],
+                    data.companyFollows || [],
+                    data.savedJobs || [],
+                    messagePartners
+                );
+
+                const trajectory = DataUtils.getCareerTrajectory(data.positions || []);
 
                 const calculated = {
                     composition: DataUtils.getNetworkComposition(data.connections || []),
                     growth: DataUtils.getConnectionGrowth(data.connections || []),
-                    dormant: DataUtils.getDormantConnections(data.connections || [], messagePartners, 12),
-                    strategic: DataUtils.getStrategicConnections(
-                        data.connections || [],
-                        data.companyFollows || [],
-                        data.savedJobs || [],
-                        messagePartners
-                    ),
-                    trajectory: DataUtils.getCareerTrajectory(data.positions || [])
+                    dormant: dormant,
+                    forgottenVIPs: DataUtils.getForgottenVIPs(dormant, data, intent, 20),
+                    strategic: strategic,
+                    trajectory: trajectory,
+                    recruiters: recruiters,
+                    investors: investors,
+                    founders: founders,
+                    executives: executives,
+                    messagePartners: messagePartners,
+                    // New insight tabs
+                    careerInsights: DataUtils.getCareerInsights(trajectory, data.jobApplications, data.savedJobs),
+                    relationshipInsights: DataUtils.getRelationshipInsights(messagePartners, dormant, strategic, founders, recruiters, investors, executives)
                 };
                 setInsights(calculated);
-            }, [data, userProfileUrl]);
+            }, [data, userProfileUrl, intent]);
 
             if (!insights) return <div className="text-center p-12">Analyzing data...</div>;
 
             return (
                 <div className="max-w-7xl mx-auto fade-in">
                     {/* Tab Navigation */}
-                    <div className="flex justify-center gap-4 mb-8">
+                    <div className="flex flex-wrap justify-center gap-2 md:gap-4 mb-8">
                         <button
                             onClick={() => setActiveTab('network')}
-                            className={`px-6 py-3 rounded-full font-medium transition ${
+                            className={`px-4 md:px-6 py-2 md:py-3 rounded-full font-medium transition text-sm md:text-base ${
                                 activeTab === 'network'
                                     ? 'bg-linkedin text-white shadow-lg shadow-blue-500/20'
                                     : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
                             }`}
                         >
-                            Network Health
+                            🔗 Network Health
+                        </button>
+                        <button
+                            onClick={() => setActiveTab('careerActions')}
+                            className={`px-4 md:px-6 py-2 md:py-3 rounded-full font-medium transition text-sm md:text-base ${
+                                activeTab === 'careerActions'
+                                    ? 'bg-linkedin text-white shadow-lg shadow-blue-500/20'
+                                    : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+                            }`}
+                        >
+                            🎯 Career Actions
+                        </button>
+                        <button
+                            onClick={() => setActiveTab('relationshipIntel')}
+                            className={`px-4 md:px-6 py-2 md:py-3 rounded-full font-medium transition text-sm md:text-base ${
+                                activeTab === 'relationshipIntel'
+                                    ? 'bg-linkedin text-white shadow-lg shadow-blue-500/20'
+                                    : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+                            }`}
+                        >
+                            💬 Relationship Intel
                         </button>
                         <button
                             onClick={() => setActiveTab('career')}
-                            className={`px-6 py-3 rounded-full font-medium transition ${
+                            className={`px-4 md:px-6 py-2 md:py-3 rounded-full font-medium transition text-sm md:text-base ${
                                 activeTab === 'career'
                                     ? 'bg-linkedin text-white shadow-lg shadow-blue-500/20'
                                     : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
                             }`}
                         >
-                            Career Trajectory
+                            📈 Career Trajectory
                         </button>
                     </div>
 
+                    {/* Intent Mode Selector */}
+                    {activeTab === 'network' && (
+                        <IntentModeSelector intent={intent} onIntentChange={setIntent} />
+                    )}
+
                     {/* Content */}
                     <div className="fade-in pb-12">
-                        {activeTab === 'network' && <NetworkHealth data={data} insights={insights} />}
+                        {activeTab === 'network' && <NetworkHealth data={data} insights={insights} intent={intent} />}
+                        {activeTab === 'careerActions' && <CareerActions insights={insights} data={data} />}
+                        {activeTab === 'relationshipIntel' && <RelationshipIntel insights={insights} data={data} messagePartners={insights.messagePartners} />}
                         {activeTab === 'career' && <CareerTrajectory data={data} insights={insights} />}
                     </div>
 
