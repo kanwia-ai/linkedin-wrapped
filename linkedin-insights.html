@@ -48,6 +48,213 @@
     <script type="text/babel">
         const { useState, useCallback } = React;
 
+        // Data processing utilities
+        const DataUtils = {
+            // Parse various date formats from LinkedIn exports
+            parseDate(dateStr) {
+                if (!dateStr) return null;
+
+                // Format: "25 Nov 2025" (Connections.csv)
+                const dmyMatch = dateStr.match(/(\d{1,2})\s+(\w{3})\s+(\d{4})/);
+                if (dmyMatch) {
+                    return new Date(`${dmyMatch[2]} ${dmyMatch[1]}, ${dmyMatch[3]}`);
+                }
+
+                // Format: "2025-11-28 19:31:41 UTC" (messages.csv)
+                const isoMatch = dateStr.match(/(\d{4})-(\d{2})-(\d{2})/);
+                if (isoMatch) {
+                    return new Date(dateStr);
+                }
+
+                // Format: "Mon Oct 13 15:35:57 UTC 2025" (Company Follows.csv)
+                const longMatch = dateStr.match(/\w{3}\s+(\w{3})\s+(\d{1,2})\s+[\d:]+\s+\w+\s+(\d{4})/);
+                if (longMatch) {
+                    return new Date(`${longMatch[1]} ${longMatch[2]}, ${longMatch[3]}`);
+                }
+
+                // Format: "10/19/22, 9:45 AM" (Saved Jobs.csv)
+                const usMatch = dateStr.match(/(\d{1,2})\/(\d{1,2})\/(\d{2})/);
+                if (usMatch) {
+                    const year = parseInt(usMatch[3]) + 2000;
+                    return new Date(`${usMatch[1]}/${usMatch[2]}/${year}`);
+                }
+
+                return new Date(dateStr);
+            },
+
+            // Get unique message partners and last message date
+            getMessagePartners(messages, userProfileUrl) {
+                const partners = {};
+
+                messages.forEach(msg => {
+                    const partnerUrl = msg['SENDER PROFILE URL'] === userProfileUrl
+                        ? msg['RECIPIENT PROFILE URLS']
+                        : msg['SENDER PROFILE URL'];
+                    const partnerName = msg['SENDER PROFILE URL'] === userProfileUrl
+                        ? msg['TO']
+                        : msg['FROM'];
+
+                    if (!partnerUrl || partnerUrl === userProfileUrl) return;
+
+                    const date = this.parseDate(msg['DATE']);
+                    if (!partners[partnerUrl] || date > partners[partnerUrl].lastMessage) {
+                        partners[partnerUrl] = {
+                            name: partnerName,
+                            url: partnerUrl,
+                            lastMessage: date,
+                            messageCount: (partners[partnerUrl]?.messageCount || 0) + 1
+                        };
+                    } else {
+                        partners[partnerUrl].messageCount++;
+                    }
+                });
+
+                return partners;
+            },
+
+            // Analyze network composition by company
+            getNetworkComposition(connections) {
+                const companies = {};
+                const positions = {};
+
+                connections.forEach(conn => {
+                    const company = conn['Company'] || 'Unknown';
+                    const position = conn['Position'] || 'Unknown';
+
+                    companies[company] = (companies[company] || 0) + 1;
+                    positions[position] = (positions[position] || 0) + 1;
+                });
+
+                return {
+                    topCompanies: Object.entries(companies)
+                        .sort((a, b) => b[1] - a[1])
+                        .slice(0, 15)
+                        .map(([name, count]) => ({ name, count })),
+                    topPositions: Object.entries(positions)
+                        .sort((a, b) => b[1] - a[1])
+                        .slice(0, 10)
+                        .map(([name, count]) => ({ name, count }))
+                };
+            },
+
+            // Get connection growth over time
+            getConnectionGrowth(connections) {
+                const monthly = {};
+
+                connections.forEach(conn => {
+                    const date = this.parseDate(conn['Connected On']);
+                    if (!date || isNaN(date.getTime())) return;
+
+                    const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+                    monthly[key] = (monthly[key] || 0) + 1;
+                });
+
+                return Object.entries(monthly)
+                    .sort((a, b) => a[0].localeCompare(b[0]))
+                    .map(([month, count]) => ({ month, count }));
+            },
+
+            // Find dormant connections (time-based)
+            getDormantConnections(connections, messagePartners, monthsThreshold = 12) {
+                const now = new Date();
+                const thresholdDate = new Date(now.setMonth(now.getMonth() - monthsThreshold));
+
+                return connections
+                    .map(conn => {
+                        const connectedDate = this.parseDate(conn['Connected On']);
+                        const url = conn['URL'];
+                        const partner = messagePartners[url];
+
+                        const lastContact = partner?.lastMessage || connectedDate;
+                        const monthsSinceContact = lastContact
+                            ? Math.floor((new Date() - lastContact) / (1000 * 60 * 60 * 24 * 30))
+                            : null;
+
+                        return {
+                            name: `${conn['First Name']} ${conn['Last Name']}`,
+                            company: conn['Company'] || 'Unknown',
+                            position: conn['Position'] || 'Unknown',
+                            url: url,
+                            connectedOn: connectedDate,
+                            lastMessage: partner?.lastMessage || null,
+                            messageCount: partner?.messageCount || 0,
+                            monthsSinceContact,
+                            isDormant: !lastContact || lastContact < thresholdDate
+                        };
+                    })
+                    .filter(c => c.isDormant)
+                    .sort((a, b) => (b.connectedOn || 0) - (a.connectedOn || 0));
+            },
+
+            // Find strategic connections (at companies you follow or saved jobs for)
+            getStrategicConnections(connections, companyFollows, savedJobs, messagePartners) {
+                const targetCompanies = new Set();
+
+                // Add followed companies
+                companyFollows?.forEach(f => {
+                    if (f['Organization']) targetCompanies.add(f['Organization'].toLowerCase());
+                });
+
+                // Add companies from saved jobs
+                savedJobs?.forEach(j => {
+                    if (j['Company Name']) targetCompanies.add(j['Company Name'].toLowerCase());
+                });
+
+                return connections
+                    .filter(conn => {
+                        const company = (conn['Company'] || '').toLowerCase();
+                        return targetCompanies.has(company);
+                    })
+                    .map(conn => {
+                        const url = conn['URL'];
+                        const partner = messagePartners[url];
+
+                        return {
+                            name: `${conn['First Name']} ${conn['Last Name']}`,
+                            company: conn['Company'],
+                            position: conn['Position'] || 'Unknown',
+                            url: url,
+                            lastMessage: partner?.lastMessage || null,
+                            messageCount: partner?.messageCount || 0,
+                            isWarm: partner && partner.messageCount > 0
+                        };
+                    })
+                    .sort((a, b) => (b.messageCount || 0) - (a.messageCount || 0));
+            },
+
+            // Analyze career trajectory from positions
+            getCareerTrajectory(positions) {
+                return positions
+                    .filter(p => p['Company Name'] && p['Started On'])
+                    .map(p => {
+                        const startParts = p['Started On'].split(' ');
+                        const endParts = p['Finished On'] ? p['Finished On'].split(' ') : null;
+
+                        const monthMap = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5,
+                                           Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
+
+                        const startDate = new Date(parseInt(startParts[1]) || 2020, monthMap[startParts[0]] || 0);
+                        const endDate = endParts
+                            ? new Date(parseInt(endParts[1]) || 2024, monthMap[endParts[0]] || 11)
+                            : new Date();
+
+                        const months = Math.max(1, Math.round((endDate - startDate) / (1000 * 60 * 60 * 24 * 30)));
+
+                        return {
+                            company: p['Company Name'],
+                            title: p['Title'],
+                            description: p['Description'],
+                            location: p['Location'],
+                            startDate,
+                            endDate: endParts ? endDate : null,
+                            isCurrent: !endParts,
+                            tenureMonths: months
+                        };
+                    })
+                    .sort((a, b) => b.startDate - a.startDate);
+            }
+        };
+
         function FileUpload({ onDataLoaded }) {
             const [isDragging, setIsDragging] = useState(false);
             const [loading, setLoading] = useState(false);
