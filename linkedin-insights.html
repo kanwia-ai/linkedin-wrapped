@@ -464,6 +464,213 @@
             );
         }
 
+        function CareerTimeline({ positions }) {
+            const totalYears = positions.length > 0
+                ? Math.ceil((new Date() - positions[positions.length - 1]?.startDate) / (1000 * 60 * 60 * 24 * 365))
+                : 0;
+
+            return (
+                <div className="bg-gray-800 rounded-xl p-6">
+                    <h3 className="text-xl font-semibold mb-6">Career Timeline</h3>
+
+                    <div className="relative">
+                        {/* Timeline line */}
+                        <div className="absolute left-4 top-0 bottom-0 w-0.5 bg-gray-600" />
+
+                        <div className="space-y-6">
+                            {positions.map((pos, i) => (
+                                <div key={i} className="relative pl-12">
+                                    {/* Timeline dot */}
+                                    <div className={`absolute left-2.5 w-3 h-3 rounded-full ${pos.isCurrent ? 'bg-green-400' : 'bg-linkedin'}`} />
+
+                                    <div className="bg-gray-700/50 rounded-lg p-4">
+                                        <div className="flex justify-between items-start mb-2">
+                                            <div>
+                                                <h4 className="font-semibold text-lg">{pos.title}</h4>
+                                                <p className="text-linkedin">{pos.company}</p>
+                                            </div>
+                                            <div className="text-right text-sm">
+                                                <p className="text-gray-300">
+                                                    {pos.startDate?.toLocaleDateString('en-US', { month: 'short', year: 'numeric' })}
+                                                    {' → '}
+                                                    {pos.isCurrent ? 'Present' : pos.endDate?.toLocaleDateString('en-US', { month: 'short', year: 'numeric' })}
+                                                </p>
+                                                <p className="text-gray-500">
+                                                    {Math.floor(pos.tenureMonths / 12)}y {pos.tenureMonths % 12}m
+                                                </p>
+                                            </div>
+                                        </div>
+                                        {pos.location && (
+                                            <p className="text-sm text-gray-400">📍 {pos.location}</p>
+                                        )}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        function TenureAnalysis({ positions }) {
+            const tenures = positions.map(p => p.tenureMonths);
+            const avgTenure = tenures.length > 0
+                ? Math.round(tenures.reduce((a, b) => a + b, 0) / tenures.length)
+                : 0;
+            const maxTenure = Math.max(...tenures, 0);
+            const minTenure = Math.min(...tenures.filter(t => t > 0), 0);
+
+            const chartData = positions.map(p => ({
+                name: p.company.length > 20 ? p.company.substring(0, 20) + '...' : p.company,
+                months: p.tenureMonths,
+                current: p.isCurrent
+            })).reverse();
+
+            return (
+                <div className="bg-gray-800 rounded-xl p-6">
+                    <h3 className="text-xl font-semibold mb-4">Tenure Analysis</h3>
+
+                    <div className="grid grid-cols-3 gap-4 mb-6">
+                        <div className="text-center p-4 bg-gray-700/50 rounded-lg">
+                            <p className="text-2xl font-bold text-white">
+                                {Math.floor(avgTenure / 12)}y {avgTenure % 12}m
+                            </p>
+                            <p className="text-sm text-gray-400">Average Tenure</p>
+                        </div>
+                        <div className="text-center p-4 bg-gray-700/50 rounded-lg">
+                            <p className="text-2xl font-bold text-green-400">
+                                {Math.floor(maxTenure / 12)}y {maxTenure % 12}m
+                            </p>
+                            <p className="text-sm text-gray-400">Longest Role</p>
+                        </div>
+                        <div className="text-center p-4 bg-gray-700/50 rounded-lg">
+                            <p className="text-2xl font-bold text-yellow-400">
+                                {Math.floor(minTenure / 12)}y {minTenure % 12}m
+                            </p>
+                            <p className="text-sm text-gray-400">Shortest Role</p>
+                        </div>
+                    </div>
+
+                    <ResponsiveContainer width="100%" height={200}>
+                        <BarChart data={chartData}>
+                            <XAxis dataKey="name" stroke="#666" tick={{ fontSize: 10 }} angle={-45} textAnchor="end" height={80} />
+                            <YAxis stroke="#666" label={{ value: 'Months', angle: -90, position: 'insideLeft', fill: '#666' }} />
+                            <Tooltip
+                                contentStyle={{ backgroundColor: '#1f2937', border: 'none', borderRadius: '8px' }}
+                                formatter={(value) => [`${Math.floor(value/12)}y ${value%12}m`, 'Tenure']}
+                            />
+                            <Bar dataKey="months" fill="#0A66C2" radius={[4, 4, 0, 0]}>
+                                {chartData.map((entry, index) => (
+                                    <Cell key={index} fill={entry.current ? '#22c55e' : '#0A66C2'} />
+                                ))}
+                            </Bar>
+                        </BarChart>
+                    </ResponsiveContainer>
+                </div>
+            );
+        }
+
+        function CareerInsights({ positions }) {
+            // Calculate career stats
+            const totalExperience = positions.reduce((sum, p) => sum + p.tenureMonths, 0);
+            const uniqueCompanies = new Set(positions.map(p => p.company)).size;
+            const currentRole = positions.find(p => p.isCurrent);
+
+            // Detect career transitions
+            const transitions = [];
+            for (let i = 0; i < positions.length - 1; i++) {
+                const current = positions[i];
+                const prev = positions[i + 1];
+
+                // Simple transition detection based on title keywords
+                const currentType = current.title?.toLowerCase().includes('founder') ? 'Founder' :
+                                  current.title?.toLowerCase().includes('director') ? 'Director' :
+                                  current.title?.toLowerCase().includes('manager') ? 'Manager' :
+                                  current.title?.toLowerCase().includes('lead') ? 'Lead' :
+                                  current.title?.toLowerCase().includes('consultant') ? 'Consultant' :
+                                  'Individual Contributor';
+                const prevType = prev.title?.toLowerCase().includes('founder') ? 'Founder' :
+                                prev.title?.toLowerCase().includes('director') ? 'Director' :
+                                prev.title?.toLowerCase().includes('manager') ? 'Manager' :
+                                prev.title?.toLowerCase().includes('lead') ? 'Lead' :
+                                prev.title?.toLowerCase().includes('consultant') ? 'Consultant' :
+                                'Individual Contributor';
+
+                if (currentType !== prevType) {
+                    transitions.push({ from: prevType, to: currentType, year: current.startDate?.getFullYear() });
+                }
+            }
+
+            return (
+                <div className="bg-gray-800 rounded-xl p-6">
+                    <h3 className="text-xl font-semibold mb-4">Career Insights</h3>
+
+                    <div className="space-y-4">
+                        <div className="flex justify-between items-center p-3 bg-gray-700/50 rounded-lg">
+                            <span className="text-gray-300">Total Experience</span>
+                            <span className="font-semibold">{Math.floor(totalExperience / 12)} years {totalExperience % 12} months</span>
+                        </div>
+
+                        <div className="flex justify-between items-center p-3 bg-gray-700/50 rounded-lg">
+                            <span className="text-gray-300">Companies Worked At</span>
+                            <span className="font-semibold">{uniqueCompanies}</span>
+                        </div>
+
+                        <div className="flex justify-between items-center p-3 bg-gray-700/50 rounded-lg">
+                            <span className="text-gray-300">Current Role</span>
+                            <span className="font-semibold text-green-400">{currentRole?.title || 'N/A'}</span>
+                        </div>
+
+                        {transitions.length > 0 && (
+                            <div className="mt-4">
+                                <p className="text-gray-400 text-sm mb-2">Career Transitions</p>
+                                <div className="flex flex-wrap gap-2">
+                                    {transitions.map((t, i) => (
+                                        <span key={i} className="bg-linkedin/20 text-linkedin px-3 py-1 rounded-full text-sm">
+                                            {t.from} → {t.to} ({t.year})
+                                        </span>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        }
+
+        function CareerTrajectory({ data, insights }) {
+            return (
+                <div className="space-y-6">
+                    <h2 className="text-2xl font-bold flex items-center gap-2">
+                        <span>📈</span> Career Trajectory
+                    </h2>
+
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <StatCard
+                            label="Total Positions"
+                            value={insights.trajectory.length}
+                        />
+                        <StatCard
+                            label="Years in Career"
+                            value={Math.floor(insights.trajectory.reduce((s, p) => s + p.tenureMonths, 0) / 12)}
+                        />
+                        <StatCard
+                            label="Current Role"
+                            value={insights.trajectory.find(p => p.isCurrent)?.title?.split(' ')[0] || 'N/A'}
+                        />
+                    </div>
+
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        <CareerTimeline positions={insights.trajectory} />
+                        <div className="space-y-6">
+                            <TenureAnalysis positions={insights.trajectory} />
+                            <CareerInsights positions={insights.trajectory} />
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
         function FileUpload({ onDataLoaded }) {
             const [isDragging, setIsDragging] = useState(false);
             const [loading, setLoading] = useState(false);
