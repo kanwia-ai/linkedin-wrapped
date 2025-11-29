@@ -53,8 +53,14 @@
             const [loading, setLoading] = useState(false);
             const [error, setError] = useState(null);
 
-            const parseCSV = (text) => {
+            const parseCSV = (text, skipLines = 0) => {
                 return new Promise((resolve) => {
+                    // Skip initial lines if needed (LinkedIn CSVs have notes at the top)
+                    if (skipLines > 0) {
+                        const lines = text.split('\n');
+                        text = lines.slice(skipLines).join('\n');
+                    }
+
                     Papa.parse(text, {
                         header: true,
                         skipEmptyLines: true,
@@ -72,22 +78,22 @@
                     const data = {};
 
                     const fileMapping = {
-                        'Connections.csv': 'connections',
-                        'messages.csv': 'messages',
-                        'Positions.csv': 'positions',
-                        'Company Follows.csv': 'companyFollows',
-                        'Skills.csv': 'skills',
-                        'Education.csv': 'education',
-                        'Jobs/Saved Jobs.csv': 'savedJobs',
-                        'Jobs/Job Applications.csv': 'jobApplications',
-                        'Invitations.csv': 'invitations',
+                        'Connections.csv': { key: 'connections', skipLines: 3 },
+                        'messages.csv': { key: 'messages', skipLines: 0 },
+                        'Positions.csv': { key: 'positions', skipLines: 0 },
+                        'Company Follows.csv': { key: 'companyFollows', skipLines: 0 },
+                        'Skills.csv': { key: 'skills', skipLines: 0 },
+                        'Education.csv': { key: 'education', skipLines: 0 },
+                        'Jobs/Saved Jobs.csv': { key: 'savedJobs', skipLines: 0 },
+                        'Jobs/Job Applications.csv': { key: 'jobApplications', skipLines: 0 },
+                        'Invitations.csv': { key: 'invitations', skipLines: 0 },
                     };
 
-                    for (const [fileName, key] of Object.entries(fileMapping)) {
+                    for (const [fileName, config] of Object.entries(fileMapping)) {
                         const zipFile = zip.file(fileName);
                         if (zipFile) {
                             const text = await zipFile.async('string');
-                            data[key] = await parseCSV(text);
+                            data[config.key] = await parseCSV(text, config.skipLines);
                         }
                     }
 
