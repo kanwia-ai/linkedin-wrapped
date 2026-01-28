@@ -18,3 +18,34 @@ package-lock.json
 
 # OS files
 .DS_Store
+.env
+.env.*
+!.env.example
+!.env.template
+credentials.json
+creds.json
+service-account*.json
+token.json
+token.pickle
+secrets.json
+secrets.yaml
+secrets.yml
+*.pem
+*.key
+*.pfx
+*.p12
+id_rsa
+id_ed25519
+.netrc
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
